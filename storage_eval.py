@@ -39,8 +39,10 @@ class StorageConstants:
 
     # ========== 折旧相关 ==========
     DEPRECIATION_YEARS = 10                # 储能折旧年限 (边界表)
+    DEPRECIATION_YEARS_NON_BATTERY = 15    # 非电池资产折旧年限 (DL/T 2919-2025 E.1.4)
     RESIDUAL_RATIO = 0.05                  # 残值率 5%
     DEPRECIATION_BASE_RATIO = 0.95         # 折旧基数比例
+    BATTERY_ASSET_RATIO = 0.60             # 电池资产占比 (默认60%, 可配置)
 
     # ========== 项目期限 ==========
     CONSTRUCT_PERIOD = 1                   # 建设期 (年)
@@ -182,6 +184,12 @@ class StorageProject:
 
         # 预计算贷款本金
         self.loan_principal = self.static_invest * (1 - self.capital_ratio)
+
+        # 电池资产占比 (用于分离折旧计算)
+        # 依据 DL/T 2919-2025 E.1.4: 电池部分按寿命折旧, 其余部分按15-20年折旧
+        self.battery_asset_ratio = float(self.p.get('battery_asset_ratio', StorageConstants.BATTERY_ASSET_RATIO))
+        if not 0 < self.battery_asset_ratio <= 1:
+            raise InputValidationError("电池资产比例必须在 (0, 1] 范围内")
 
         # 获取收益模式
         self.revenue_mode = self.p.get('revenue_mode', StorageConstants.MODE_ARBITRAGE)
@@ -327,7 +335,19 @@ class StorageProject:
             # --- C. 运营期逐年迭代 ---
             current_deductible = deductible_tax
             fixed_asset_value = self.static_invest + const_interest - deductible_tax
-            depreciation_per_year = fixed_asset_value * StorageConstants.DEPRECIATION_BASE_RATIO / StorageConstants.DEPRECIATION_YEARS
+
+            # 分离电池资产与非电池资产折旧 (依据 DL/T 2919-2025 E.1.4)
+            battery_asset_value = fixed_asset_value * self.battery_asset_ratio
+            non_battery_asset_value = fixed_asset_value * (1 - self.battery_asset_ratio)
+
+            # 电池资产按电池寿命折旧
+            battery_depreciation_per_year = (
+                battery_asset_value * StorageConstants.DEPRECIATION_BASE_RATIO / self.battery_life
+            )
+            # 非电池资产按15-20年折旧
+            non_battery_depreciation_per_year = (
+                non_battery_asset_value * StorageConstants.DEPRECIATION_BASE_RATIO / StorageConstants.DEPRECIATION_YEARS_NON_BATTERY
+            )
 
             for y in range(2, StorageConstants.OPERATION_PERIOD + 2):
                 op_year = y - 1
@@ -411,8 +431,12 @@ class StorageProject:
                     battery_replacement = self.replacement_cost
                 df.loc[y, 'Battery_Replacement'] = battery_replacement
 
-                # ========== 折旧 (运营期前10年) ==========
-                depreciation = depreciation_per_year if op_year <= StorageConstants.DEPRECIATION_YEARS else 0
+                # ========== 折旧 (分离电池与非电池资产) ==========
+                # 电池折旧: 按电池寿命 (调峰10年, 调频4年)
+                battery_depreciation = battery_depreciation_per_year if op_year <= self.battery_life else 0
+                # 非电池折旧: 按15年折旧
+                non_battery_depreciation = non_battery_depreciation_per_year if op_year <= StorageConstants.DEPRECIATION_YEARS_NON_BATTERY else 0
+                depreciation = battery_depreciation + non_battery_depreciation
                 df.loc[y, 'Depreciation'] = depreciation
 
                 # ========== 利润与所得税 ==========
@@ -551,19 +575,28 @@ class StorageProject:
         deductible_tax = self.p.get('deductible_tax', self.static_invest / (1 + StorageConstants.VAT_ELECTRICITY) * StorageConstants.VAT_ELECTRICITY)
         const_interest = self.const_interest
         fixed_asset_value = self.static_invest + const_interest - deductible_tax
-        depreciation_per_year = fixed_asset_value * StorageConstants.DEPRECIATION_BASE_RATIO / StorageConstants.DEPRECIATION_YEARS
+
+        # 分离电池与非电池资产折旧计算
+        battery_asset_value = fixed_asset_value * self.battery_asset_ratio
+        non_battery_asset_value = fixed_asset_value * (1 - self.battery_asset_ratio)
+        battery_depreciation_per_year = battery_asset_value * StorageConstants.DEPRECIATION_BASE_RATIO / self.battery_life
+        non_battery_depreciation_per_year = non_battery_asset_value * StorageConstants.DEPRECIATION_BASE_RATIO / StorageConstants.DEPRECIATION_YEARS_NON_BATTERY
+
+        # 计算每年的折旧额
+        depreciation_list = []
+        for i in range(1, StorageConstants.OPERATION_PERIOD + 1):
+            battery_dep = battery_depreciation_per_year if i <= self.battery_life else 0
+            non_battery_dep = non_battery_depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS_NON_BATTERY else 0
+            depreciation_list.append(battery_dep + non_battery_dep)
 
         table = pd.DataFrame({
             '年份': [f'第{i}年' for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
             '运维成本(万元)': cashflow_df['OM_Cost'].values,
             '电池更换费用(万元)': cashflow_df['Battery_Replacement'].values,
-            '折旧费(万元)': [depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
-                            for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
+            '折旧费(万元)': depreciation_list,
             '摊销费(万元)': [0.0] * StorageConstants.OPERATION_PERIOD,
             '财务费用(万元)': [0.0] * StorageConstants.OPERATION_PERIOD,
-            '总成本费用(万元)': cashflow_df['OM_Cost'].values + cashflow_df['Battery_Replacement'].values +
-                              [depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
-                               for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
+            '总成本费用(万元)': cashflow_df['OM_Cost'].values + cashflow_df['Battery_Replacement'].values + depreciation_list,
         })
 
         table['经营成本(万元)'] = table['运维成本(万元)'] + table['电池更换费用(万元)']
@@ -589,11 +622,20 @@ class StorageProject:
         deductible_tax = self.p.get('deductible_tax', self.static_invest / (1 + StorageConstants.VAT_ELECTRICITY) * StorageConstants.VAT_ELECTRICITY)
         const_interest = self.const_interest
         fixed_asset_value = self.static_invest + const_interest - deductible_tax
-        depreciation_per_year = fixed_asset_value * StorageConstants.DEPRECIATION_BASE_RATIO / StorageConstants.DEPRECIATION_YEARS
+
+        # 分离电池与非电池资产折旧计算
+        battery_asset_value = fixed_asset_value * self.battery_asset_ratio
+        non_battery_asset_value = fixed_asset_value * (1 - self.battery_asset_ratio)
+        battery_depreciation_per_year = battery_asset_value * StorageConstants.DEPRECIATION_BASE_RATIO / self.battery_life
+        non_battery_depreciation_per_year = non_battery_asset_value * StorageConstants.DEPRECIATION_BASE_RATIO / StorageConstants.DEPRECIATION_YEARS_NON_BATTERY
 
         profit_list = []
+        depreciation_list = []
         for i in range(1, StorageConstants.OPERATION_PERIOD + 1):
-            depreciation = depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
+            battery_dep = battery_depreciation_per_year if i <= self.battery_life else 0
+            non_battery_dep = non_battery_depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS_NON_BATTERY else 0
+            depreciation = battery_dep + non_battery_dep
+            depreciation_list.append(depreciation)
             profit = cashflow_df.loc[i + 1, 'Revenue_Exc'] - cashflow_df.loc[i + 1, 'Charge_Cost'] - cashflow_df.loc[i + 1, 'OM_Cost'] - cashflow_df.loc[i + 1, 'Surtax'] - depreciation - cashflow_df.loc[i + 1, 'Battery_Replacement']
             profit_list.append(profit)
 
@@ -602,9 +644,7 @@ class StorageProject:
             '营业收入(不含税,万元)': cashflow_df['Revenue_Exc'].values,
             '充电成本(万元)': cashflow_df['Charge_Cost'].values,
             '营业税金及附加(万元)': cashflow_df['Surtax'].values,
-            '总成本费用(万元)': cashflow_df['OM_Cost'].values + cashflow_df['Battery_Replacement'].values +
-                              [depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
-                               for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
+            '总成本费用(万元)': cashflow_df['OM_Cost'].values + cashflow_df['Battery_Replacement'].values + depreciation_list,
             '利润总额(万元)': profit_list,
             '所得税(万元)': cashflow_df['Income_Tax'].values,
             '净利润(万元)': [p - t for p, t in zip(profit_list, cashflow_df['Income_Tax'].values)],
