@@ -276,7 +276,9 @@ class StorageProject:
         om_by_power = self.power_mw * 1000 * StorageConstants.OM_FEE_PER_KW / 10000  # 万元
         # 估算年发电量用于计算按电量的运维费
         annual_discharge = self.capacity_mwh * self.cycles_per_year if hasattr(self, 'cycles_per_year') else self.capacity_mwh * 330
-        om_by_energy = annual_discharge * StorageConstants.OM_FEE_PER_KWH  # 万元
+        # 修正: MWh → kWh → 元 → 万元的完整换算
+        # annual_discharge (MWh) × 1000 (kWh/MWh) × 0.05 (元/kWh) / 10000 (元/万元)
+        om_by_energy = annual_discharge * 1000 * StorageConstants.OM_FEE_PER_KWH / 10000  # 万元
 
         return max(om_by_power, om_by_energy)
 
