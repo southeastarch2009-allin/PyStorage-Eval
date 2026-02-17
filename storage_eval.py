@@ -515,17 +515,17 @@ class StorageProject:
         if self.df is None:
             raise CalculationError("请先运行 calculate_cash_flow()")
 
-        df = self.df[df.index >= 2].copy()
+        cashflow_df = self.df[self.df.index >= 2].copy()
 
         table = pd.DataFrame({
             '年份': [f'第{i}年' for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
             '充电量(MWh)': [self.capacity_mwh] * StorageConstants.OPERATION_PERIOD,
             '放电量(MWh)': [self.capacity_mwh * self.efficiency] * StorageConstants.OPERATION_PERIOD,
-            '营业收入(含税,万元)': df['Revenue_Inc'].values,
-            '营业收入(不含税,万元)': df['Revenue_Exc'].values,
-            '增值税(万元)': df['Output_VAT'].values,
-            '增值税实缴(万元)': df['VAT_Payable'].values,
-            '附加税(万元)': df['Surtax'].values,
+            '营业收入(含税,万元)': cashflow_df['Revenue_Inc'].values,
+            '营业收入(不含税,万元)': cashflow_df['Revenue_Exc'].values,
+            '增值税(万元)': cashflow_df['Output_VAT'].values,
+            '增值税实缴(万元)': cashflow_df['VAT_Payable'].values,
+            '附加税(万元)': cashflow_df['Surtax'].values,
         })
 
         if filename:
@@ -544,7 +544,7 @@ class StorageProject:
         if self.df is None:
             raise CalculationError("请先运行 calculate_cash_flow()")
 
-        df = self.df[df.index >= 2].copy()
+        cashflow_df = self.df[self.df.index >= 2].copy()
 
         deductible_tax = self.p.get('deductible_tax', self.static_invest / (1 + StorageConstants.VAT_ELECTRICITY) * StorageConstants.VAT_ELECTRICITY)
         const_interest = self.const_interest
@@ -553,13 +553,13 @@ class StorageProject:
 
         table = pd.DataFrame({
             '年份': [f'第{i}年' for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
-            '运维成本(万元)': df['OM_Cost'].values,
-            '电池更换费用(万元)': df['Battery_Replacement'].values,
+            '运维成本(万元)': cashflow_df['OM_Cost'].values,
+            '电池更换费用(万元)': cashflow_df['Battery_Replacement'].values,
             '折旧费(万元)': [depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
                             for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
             '摊销费(万元)': [0.0] * StorageConstants.OPERATION_PERIOD,
             '财务费用(万元)': [0.0] * StorageConstants.OPERATION_PERIOD,
-            '总成本费用(万元)': df['OM_Cost'].values + df['Battery_Replacement'].values +
+            '总成本费用(万元)': cashflow_df['OM_Cost'].values + cashflow_df['Battery_Replacement'].values +
                               [depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
                                for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
         })
@@ -582,7 +582,7 @@ class StorageProject:
         if self.df is None:
             raise CalculationError("请先运行 calculate_cash_flow()")
 
-        df = self.df[df.index >= 2].copy()
+        cashflow_df = self.df[self.df.index >= 2].copy()
 
         deductible_tax = self.p.get('deductible_tax', self.static_invest / (1 + StorageConstants.VAT_ELECTRICITY) * StorageConstants.VAT_ELECTRICITY)
         const_interest = self.const_interest
@@ -592,20 +592,20 @@ class StorageProject:
         profit_list = []
         for i in range(1, StorageConstants.OPERATION_PERIOD + 1):
             depreciation = depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
-            profit = df.loc[i + 1, 'Revenue_Exc'] - df.loc[i + 1, 'Charge_Cost'] - df.loc[i + 1, 'OM_Cost'] - df.loc[i + 1, 'Surtax'] - depreciation - df.loc[i + 1, 'Battery_Replacement']
+            profit = cashflow_df.loc[i + 1, 'Revenue_Exc'] - cashflow_df.loc[i + 1, 'Charge_Cost'] - cashflow_df.loc[i + 1, 'OM_Cost'] - cashflow_df.loc[i + 1, 'Surtax'] - depreciation - cashflow_df.loc[i + 1, 'Battery_Replacement']
             profit_list.append(profit)
 
         table = pd.DataFrame({
             '年份': [f'第{i}年' for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
-            '营业收入(不含税,万元)': df['Revenue_Exc'].values,
-            '充电成本(万元)': df['Charge_Cost'].values,
-            '营业税金及附加(万元)': df['Surtax'].values,
-            '总成本费用(万元)': df['OM_Cost'].values + df['Battery_Replacement'].values +
+            '营业收入(不含税,万元)': cashflow_df['Revenue_Exc'].values,
+            '充电成本(万元)': cashflow_df['Charge_Cost'].values,
+            '营业税金及附加(万元)': cashflow_df['Surtax'].values,
+            '总成本费用(万元)': cashflow_df['OM_Cost'].values + cashflow_df['Battery_Replacement'].values +
                               [depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
                                for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
             '利润总额(万元)': profit_list,
-            '所得税(万元)': df['Income_Tax'].values,
-            '净利润(万元)': [p - t for p, t in zip(profit_list, df['Income_Tax'].values)],
+            '所得税(万元)': cashflow_df['Income_Tax'].values,
+            '净利润(万元)': [p - t for p, t in zip(profit_list, cashflow_df['Income_Tax'].values)],
         })
 
         table['累计净利润(万元)'] = table['净利润(万元)'].cumsum()
@@ -627,9 +627,9 @@ class StorageProject:
             raise CalculationError("请先运行 calculate_cash_flow()")
 
         metrics = self.get_metrics()
-        df = self.df[self.df.index >= 2].copy()
+        cashflow_df = self.df[self.df.index >= 2].copy()
 
-        total_profit = df['Revenue_Exc'].sum() - df['Charge_Cost'].sum() - df['OM_Cost'].sum() - df['Surtax'].sum()
+        total_profit = cashflow_df['Revenue_Exc'].sum() - cashflow_df['Charge_Cost'].sum() - cashflow_df['OM_Cost'].sum() - cashflow_df['Surtax'].sum()
         roi = total_profit / self.total_invest * 100
 
         table = pd.DataFrame({
