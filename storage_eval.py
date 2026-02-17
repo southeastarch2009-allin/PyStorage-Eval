@@ -501,6 +501,235 @@ class StorageProject:
         except Exception as e:
             raise CalculationError(f"指标计算失败: {e}") from e
 
+    # ==============================================================================
+    # 财务报表输出方法
+    # ==============================================================================
+
+    def export_revenue_tax_table(self, filename: Optional[str] = None) -> pd.DataFrame:
+        """
+        导出收入和税金表
+
+        Args:
+            filename: 输出文件名
+        """
+        if self.df is None:
+            raise CalculationError("请先运行 calculate_cash_flow()")
+
+        df = self.df[df.index >= 2].copy()
+
+        table = pd.DataFrame({
+            '年份': [f'第{i}年' for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
+            '充电量(MWh)': [self.capacity_mwh] * StorageConstants.OPERATION_PERIOD,
+            '放电量(MWh)': [self.capacity_mwh * self.efficiency] * StorageConstants.OPERATION_PERIOD,
+            '营业收入(含税,万元)': df['Revenue_Inc'].values,
+            '营业收入(不含税,万元)': df['Revenue_Exc'].values,
+            '增值税(万元)': df['Output_VAT'].values,
+            '增值税实缴(万元)': df['VAT_Payable'].values,
+            '附加税(万元)': df['Surtax'].values,
+        })
+
+        if filename:
+            table.to_csv(filename, index=False, encoding='utf-8-sig')
+            logger.info(f"收入和税金表已保存到: {filename}")
+
+        return table
+
+    def export_total_cost_table(self, filename: Optional[str] = None) -> pd.DataFrame:
+        """
+        导出总成本费用估算表
+
+        Args:
+            filename: 输出文件名
+        """
+        if self.df is None:
+            raise CalculationError("请先运行 calculate_cash_flow()")
+
+        df = self.df[df.index >= 2].copy()
+
+        deductible_tax = self.p.get('deductible_tax', self.static_invest / (1 + StorageConstants.VAT_ELECTRICITY) * StorageConstants.VAT_ELECTRICITY)
+        const_interest = self.const_interest
+        fixed_asset_value = self.static_invest + const_interest - deductible_tax
+        depreciation_per_year = fixed_asset_value * StorageConstants.DEPRECIATION_BASE_RATIO / StorageConstants.DEPRECIATION_YEARS
+
+        table = pd.DataFrame({
+            '年份': [f'第{i}年' for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
+            '运维成本(万元)': df['OM_Cost'].values,
+            '电池更换费用(万元)': df['Battery_Replacement'].values,
+            '折旧费(万元)': [depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
+                            for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
+            '摊销费(万元)': [0.0] * StorageConstants.OPERATION_PERIOD,
+            '财务费用(万元)': [0.0] * StorageConstants.OPERATION_PERIOD,
+            '总成本费用(万元)': df['OM_Cost'].values + df['Battery_Replacement'].values +
+                              [depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
+                               for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
+        })
+
+        table['经营成本(万元)'] = table['运维成本(万元)'] + table['电池更换费用(万元)']
+
+        if filename:
+            table.to_csv(filename, index=False, encoding='utf-8-sig')
+            logger.info(f"总成本费用表已保存到: {filename}")
+
+        return table
+
+    def export_profit_table(self, filename: Optional[str] = None) -> pd.DataFrame:
+        """
+        导出利润与利润分配表
+
+        Args:
+            filename: 输出文件名
+        """
+        if self.df is None:
+            raise CalculationError("请先运行 calculate_cash_flow()")
+
+        df = self.df[df.index >= 2].copy()
+
+        deductible_tax = self.p.get('deductible_tax', self.static_invest / (1 + StorageConstants.VAT_ELECTRICITY) * StorageConstants.VAT_ELECTRICITY)
+        const_interest = self.const_interest
+        fixed_asset_value = self.static_invest + const_interest - deductible_tax
+        depreciation_per_year = fixed_asset_value * StorageConstants.DEPRECIATION_BASE_RATIO / StorageConstants.DEPRECIATION_YEARS
+
+        profit_list = []
+        for i in range(1, StorageConstants.OPERATION_PERIOD + 1):
+            depreciation = depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
+            profit = df.loc[i + 1, 'Revenue_Exc'] - df.loc[i + 1, 'Charge_Cost'] - df.loc[i + 1, 'OM_Cost'] - df.loc[i + 1, 'Surtax'] - depreciation - df.loc[i + 1, 'Battery_Replacement']
+            profit_list.append(profit)
+
+        table = pd.DataFrame({
+            '年份': [f'第{i}年' for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
+            '营业收入(不含税,万元)': df['Revenue_Exc'].values,
+            '充电成本(万元)': df['Charge_Cost'].values,
+            '营业税金及附加(万元)': df['Surtax'].values,
+            '总成本费用(万元)': df['OM_Cost'].values + df['Battery_Replacement'].values +
+                              [depreciation_per_year if i <= StorageConstants.DEPRECIATION_YEARS else 0
+                               for i in range(1, StorageConstants.OPERATION_PERIOD + 1)],
+            '利润总额(万元)': profit_list,
+            '所得税(万元)': df['Income_Tax'].values,
+            '净利润(万元)': [p - t for p, t in zip(profit_list, df['Income_Tax'].values)],
+        })
+
+        table['累计净利润(万元)'] = table['净利润(万元)'].cumsum()
+
+        if filename:
+            table.to_csv(filename, index=False, encoding='utf-8-sig')
+            logger.info(f"利润表已保存到: {filename}")
+
+        return table
+
+    def export_financial_summary_table(self, filename: Optional[str] = None) -> pd.DataFrame:
+        """
+        导出财务指标汇总表
+
+        Args:
+            filename: 输出文件名
+        """
+        if self.df is None:
+            raise CalculationError("请先运行 calculate_cash_flow()")
+
+        metrics = self.get_metrics()
+        df = self.df[self.df.index >= 2].copy()
+
+        total_profit = df['Revenue_Exc'].sum() - df['Charge_Cost'].sum() - df['OM_Cost'].sum() - df['Surtax'].sum()
+        roi = total_profit / self.total_invest * 100
+
+        table = pd.DataFrame({
+            '指标': [
+                '项目总投资(万元)',
+                '建设期利息(万元)',
+                '全投资IRR(税前,%)',
+                '全投资IRR(税后,%)',
+                '投资回收期(年)',
+                '总投资收益率(ROI,%)',
+                '年均净利润(万元)',
+                f'{StorageConstants.OPERATION_PERIOD}年累计净利润(万元)',
+                '装机功率(MW)',
+                '额定容量(MWh)',
+                '单位造价(元/Wh)',
+                '系统能效(%)',
+            ],
+            '数值': [
+                metrics['总投资'],
+                metrics['建设期利息'],
+                metrics['全投资IRR(税前)'],
+                metrics['全投资IRR(税后)'],
+                metrics['投资回收期(年)'],
+                round(roi, 2),
+                round(total_profit / StorageConstants.OPERATION_PERIOD, 2),
+                round(total_profit, 2),
+                self.power_mw,
+                self.capacity_mwh,
+                round(self.static_invest / (self.capacity_mwh * 1000), 2),
+                round(self.efficiency * 100, 1),
+            ],
+        })
+
+        if filename:
+            table.to_csv(filename, index=False, encoding='utf-8-sig')
+            logger.info(f"财务指标汇总表已保存到: {filename}")
+
+        return table
+
+
+# ==============================================================================
+# 敏感性分析
+# ==============================================================================
+
+def storage_sensitivity_analysis(
+    base_params: Dict[str, Any],
+    factor: str,
+    variation_range: float = 0.10,
+    steps: int = 5
+) -> pd.DataFrame:
+    """
+    储能项目单因素敏感性分析
+
+    Args:
+        base_params: 基础项目参数
+        factor: 要分析的因素
+        variation_range: 变化范围
+        steps: 分析步数
+
+    Returns:
+        敏感性分析结果 DataFrame
+    """
+    results = []
+    base_value = base_params.get(factor)
+
+    if base_value is None:
+        raise ValueError(f"未知的因素: {factor}")
+
+    variations = np.linspace(-variation_range, variation_range, steps)
+
+    for var in variations:
+        params_temp = base_params.copy()
+        new_value = base_value * (1 + var)
+        params_temp[factor] = new_value
+
+        try:
+            project = StorageProject(params_temp)
+            project.calculate_cash_flow()
+            metrics = project.get_metrics()
+            irr = metrics['全投资IRR(税前)']
+
+            results.append({
+                '因素': factor,
+                '变化率': f'{var*100:+.1f}%',
+                '数值': new_value,
+                'IRR(税前)%': irr,
+            })
+        except Exception as e:
+            logger.error(f"敏感性分析失败 (变化率={var*100:.1f}%): {e}")
+            results.append({
+                '因素': factor,
+                '变化率': f'{var*100:+.1f}%',
+                '数值': new_value,
+                'IRR(税前)%': None,
+            })
+
+    df = pd.DataFrame(results)
+    logger.info(f"敏感性分析完成: 因素={factor}")
+    return df
+
 
 # ==============================================================================
 # 演示与测试
@@ -570,6 +799,41 @@ def demo_storage_project() -> None:
         print(f"   运维费用: {df['OM_Cost'].sum():,.2f} 万元")
         print(f"   电池更换: {df['Battery_Replacement'].sum():,.2f} 万元")
         print(f"   净利润: {(df['Revenue_Exc'].sum() - df['Charge_Cost'].sum() - df['OM_Cost'].sum() - df['Surtax'].sum() - df['Depreciation'].sum() - df['Battery_Replacement'].sum()):,.2f} 万元")
+
+        # 导出财务报表
+        print("\n" + "=" * 70)
+        print("📄 正在生成财务报表...")
+        print("=" * 70)
+
+        project.export_revenue_tax_table('output_收入和税金表.csv')
+        print("✅ 收入和税金表: output_收入和税金表.csv")
+
+        project.export_total_cost_table('output_总成本费用表.csv')
+        print("✅ 总成本费用表: output_总成本费用表.csv")
+
+        project.export_profit_table('output_利润表.csv')
+        print("✅ 利润与利润分配表: output_利润表.csv")
+
+        project.export_financial_summary_table('output_财务指标汇总表.csv')
+        print("✅ 财务指标汇总表: output_财务指标汇总表.csv")
+
+        # 敏感性分析
+        print("\n" + "=" * 70)
+        print("📈 正在进行敏感性分析...")
+        print("=" * 70)
+
+        for factor in ['static_invest', 'discharge_price', 'charge_price', 'cycles_per_year']:
+            factor_names = {
+                'static_invest': '静态投资',
+                'discharge_price': '放电电价',
+                'charge_price': '充电电价',
+                'cycles_per_year': '循环次数'
+            }
+            sens_df = storage_sensitivity_analysis(demo_params, factor, variation_range=0.15, steps=5)
+            filename = f'output_敏感性分析_{factor_names[factor]}.csv'
+            sens_df.to_csv(filename, index=False, encoding='utf-8-sig')
+            print(f"✅ {factor_names[factor]}敏感性分析: {filename}")
+
         print("=" * 70)
 
     except (InputValidationError, CalculationError) as e:
